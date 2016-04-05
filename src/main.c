@@ -5,13 +5,6 @@
 
 #define ANTIALIASING true
 
-#define FINAL_RADIUS 68
-
-#define ANIMATION_DURATION 500
-#define ANIMATION_DELAY    0
-
-
-
 typedef struct {
     int hours;
     int minutes;
@@ -23,24 +16,25 @@ static Layer * s_canvas_layer;
 static AppTimer *timer;
 
 static GPoint s_center;
-static Time s_last_time, s_anim_time;
-static int s_radius = 0, t_delta = 3, has_launched = 0, vibe_state = 1, alert_state = 0 ,s_anim_hours_60 = 0, com_alert = 1;
+static Time s_last_time;
+static int s_radius = 0, t_delta = 0, has_launched = 0, vibe_state = 1, alert_state = 0, check_count = 0;
 static int * bgs;
 static int * bg_times;
 static int num_bgs = 0;
+static int retry_interval = 4;
 static int tag_raw = 0;
-static bool s_animating = false;
 
 static GBitmap *icon_bitmap = NULL;
 
 static BitmapLayer * icon_layer;
-static TextLayer * bg_layer, *delta_layer, *time_delta_layer, *time_layer, *date_layer;
+static TextLayer * bg_layer, *delta_layer, *time_delta_layer, *time_layer;
 
-static char date_app_text[] = "";
 static char last_bg[124];
-static char data_id[255] = "99";
+static int data_id = 99;
 static char time_delta_str[124] = "";
 static char time_text[124] = "";
+
+static ChartLayer* chart_layer;
 
 enum CgmKey {
     CGM_EGV_DELTA_KEY = 0x0,
@@ -82,62 +76,74 @@ static const uint32_t CGM_ICONS[] = {
 char *translate_error(AppMessageResult result) {
     switch (result) {
         case APP_MSG_OK: return "OK";
-        case APP_MSG_SEND_TIMEOUT: return "Send Timeout";
-        case APP_MSG_SEND_REJECTED: return "Send Rejected";
-        case APP_MSG_NOT_CONNECTED: return "Not Connected";
-        case APP_MSG_APP_NOT_RUNNING: return "App Not Up";
-        case APP_MSG_INVALID_ARGS: return "App Invalid Args";
-        case APP_MSG_BUSY: return "App Busy";
-        case APP_MSG_BUFFER_OVERFLOW: return "App Overflow";
-        case APP_MSG_ALREADY_RELEASED: return "App Msg Released";
-        case APP_MSG_CALLBACK_ALREADY_REGISTERED: return "Cback Registered";
-        case APP_MSG_CALLBACK_NOT_REGISTERED: return "Cback Not Registered";
-        case APP_MSG_OUT_OF_MEMORY: return "Out of Memory";
-        case APP_MSG_CLOSED: return "Closed";
-        case APP_MSG_INTERNAL_ERROR: return "Internal Error";
-        default: return "Unknown Error";
+        case APP_MSG_SEND_TIMEOUT: return "ast";
+        case APP_MSG_SEND_REJECTED: return "asr"; 
+        case APP_MSG_NOT_CONNECTED: return "anc"; 
+        case APP_MSG_APP_NOT_RUNNING: return "anr"; 
+        case APP_MSG_INVALID_ARGS: return "aia"; 
+        case APP_MSG_BUSY: return "aby"; 
+        case APP_MSG_BUFFER_OVERFLOW: return "abo"; 
+        case APP_MSG_ALREADY_RELEASED: return "aar";
+        case APP_MSG_CALLBACK_ALREADY_REGISTERED: return "car"; 
+        case APP_MSG_CALLBACK_NOT_REGISTERED: return "cnr";
+        case APP_MSG_OUT_OF_MEMORY: return "oom";
+        case APP_MSG_CLOSED: return "acd";
+        case APP_MSG_INTERNAL_ERROR: return "aie";
+        default: return "uer";
     }
 }
 
-/**********CHART***************/
+static void comm_alert() {
+    
+    VibePattern pat = {
+        .durations = error,
+        .num_segments = ARRAY_LENGTH(error),
+    };     
+        if (check_count % 5 == 0 || t_delta % 5 == 0) {
+            vibes_enqueue_custom_pattern(pat);
+        }
+    
+    b_color_channels[0] = 255;
+    b_color_channels[1] = 0;
+    b_color_channels[2] = 0;
+   
+    layer_mark_dirty(s_canvas_layer);
 
-static ChartLayer* chart_layer;
-
-
-
-
+}
 /************************************ UI **************************************/
+static void send_int(int key, int value) {
+  DictionaryIterator *iter;
+  app_message_outbox_begin(&iter);
+  dict_write_int(iter, key, &value, sizeof(int), true);
+  app_message_outbox_send();
+}
+
 void send_cmd(void) {
-    APP_LOG(APP_LOG_LEVEL_INFO, "send_cmd");
+    //APP_LOG(APP_LOG_LEVEL_INFO, "send_cmd");
     
     if (s_canvas_layer) {
         gbitmap_destroy(icon_bitmap);
-        snprintf(time_delta_str, 12, "check(%d)", (int)t_delta-3);
+        snprintf(time_delta_str, 12, "check(%d)", check_count++);
+        
+        if (check_count > 1)
+            data_id = 99;
+            
+        if (check_count > 4)
+            comm_alert();
+            
         if(time_delta_layer)
             text_layer_set_text(time_delta_layer, time_delta_str);
 
         icon_bitmap = gbitmap_create_with_resource(RESOURCE_ID_IMAGE_REFRESH_WHITE);
         if(icon_layer)
             bitmap_layer_set_bitmap(icon_layer, icon_bitmap);
-    }
+     }
     
-        DictionaryIterator *iter;
-        app_message_outbox_begin(&iter);
-    
-        if (iter == NULL) {
-            return;
-        }
-    
-        static char *idptr = data_id;
+        send_int(5, data_id);
+        
+        //APP_LOG(APP_LOG_LEVEL_INFO, "Message sent!");
+        //APP_LOG(APP_LOG_LEVEL_INFO, "check_count: %d", check_count);
 
-        Tuplet idval = TupletCString(5, idptr);
-    
-        dict_write_tuplet(iter, &idval);
-        dict_write_end(iter);
-        APP_LOG(APP_LOG_LEVEL_INFO, "Message sent!");
-        APP_LOG(APP_LOG_LEVEL_INFO, "t_delta: %d", t_delta);
-
-        app_message_outbox_send(); 
 }
 /*************Startup Timer*******/
 //Message SHOULD come from smartphone app, but this will kick it off in less than 60 seconds if it can.
@@ -172,61 +178,44 @@ static void clock_refresh(struct tm * tick_time) {
     }
 
     s_last_time.hours = tick_time->tm_hour;
-    APP_LOG(APP_LOG_LEVEL_DEBUG, "time hours 1: %d", s_last_time.hours);
+    //APP_LOG(APP_LOG_LEVEL_DEBUG, "time hours 1: %d", s_last_time.hours);
     s_last_time.hours -= (s_last_time.hours > 12) ? 12 : 0;
-    APP_LOG(APP_LOG_LEVEL_DEBUG, "time hours 2: %d", s_last_time.hours);
+    //APP_LOG(APP_LOG_LEVEL_DEBUG, "time hours 2: %d", s_last_time.hours);
     s_last_time.minutes = tick_time->tm_min;
     
 }
 
-void accel_tap_handler(AccelAxisType axis, int32_t direction) {
+// void accel_tap_handler(AccelAxisType axis, int32_t direction) {
     
-    if (axis == ACCEL_AXIS_X)
-    {
-        APP_LOG(APP_LOG_LEVEL_DEBUG, "axis: %s", "X");
-        //send_cmd();
-    } else if (axis == ACCEL_AXIS_Y)
+//     if (axis == ACCEL_AXIS_X)
+//     {
+//         //APP_LOG(APP_LOG_LEVEL_DEBUG, "axis: %s", "X");
+//         //send_cmd();
+//     } else if (axis == ACCEL_AXIS_Y)
         
-    {
-        APP_LOG(APP_LOG_LEVEL_DEBUG, "axis: %s", "Y");
-        //send_cmd();
-    } else if (axis == ACCEL_AXIS_Z)
-    {
-        APP_LOG(APP_LOG_LEVEL_DEBUG, "axis: %s", "Z");
-        //send_cmd();
-    }
+//     {
+//         //APP_LOG(APP_LOG_LEVEL_DEBUG, "axis: %s", "Y");
+//         //send_cmd();
+//     } else if (axis == ACCEL_AXIS_Z)
+//     {
+//         //APP_LOG(APP_LOG_LEVEL_DEBUG, "axis: %s", "Z");
+//         //send_cmd();
+//     }
     
-}
-static void comm_alert() {
-    
-    VibePattern pat = {
-        .durations = error,
-        .num_segments = ARRAY_LENGTH(error),
-    };     
-        if (t_delta % 5 == 0) {
-            vibes_enqueue_custom_pattern(pat);
-        }
-    
-    b_color_channels[0] = 255;
-    b_color_channels[1] = 0;
-    b_color_channels[2] = 0;
-   
-    layer_mark_dirty(s_canvas_layer);
+// }
 
-}
 
 static void tick_handler(struct tm * tick_time, TimeUnits changed) {
     if (!has_launched) {                 
-            snprintf(time_delta_str, 12, "load(%d)", t_delta-4);
+            snprintf(time_delta_str, 12, "load(%d)", check_count + 1);
             
             if (time_delta_layer) {
                 text_layer_set_text(time_delta_layer, time_delta_str);
             }
     } else 
-    APP_LOG(APP_LOG_LEVEL_INFO, "t_delta_tt: %d", t_delta);
-    if(t_delta > 4) {
-        // accel_service_set_sampling_rate(ACCEL_SAMPLING_10HZ);
-        // accel_tap_service_subscribe(accel_tap_handler);
+    //APP_LOG(APP_LOG_LEVEL_INFO, "tick check_count: %d", check_count);
+    if(t_delta > retry_interval || check_count > 1) {
+
         send_cmd();
         
     } else
@@ -348,7 +337,7 @@ static void reset_background() {
 }
 
 static void process_alert() {
-    APP_LOG(APP_LOG_LEVEL_DEBUG, "Vibe State: %i", vibe_state);
+    //APP_LOG(APP_LOG_LEVEL_DEBUG, "Vibe State: %i", vibe_state);
     switch (alert_state) {
         
     case LOSS_MID_NO_NOISE:;    
@@ -359,7 +348,7 @@ static void process_alert() {
         if (vibe_state > 0)
             vibes_long_pulse();
             
-        APP_LOG(APP_LOG_LEVEL_DEBUG, "Alert key: %i", LOSS_MID_NO_NOISE);
+        //APP_LOG(APP_LOG_LEVEL_DEBUG, "Alert key: %i", LOSS_MID_NO_NOISE);
 #if defined(PBL_COLOR)
         text_layer_set_text_color(bg_layer, GColorBlack);
 #ifdef PBL_PLATFORM_CHALK 
@@ -395,7 +384,7 @@ static void process_alert() {
        if (vibe_state > 0)
             vibes_long_pulse();
             
-        APP_LOG(APP_LOG_LEVEL_DEBUG, "Alert key: %i", LOSS_HIGH_NO_NOISE);
+        //APP_LOG(APP_LOG_LEVEL_DEBUG, "Alert key: %i", LOSS_HIGH_NO_NOISE);
         if(bg_layer)
             text_layer_set_text_color(bg_layer, GColorWhite);
         if(delta_layer)
@@ -414,7 +403,7 @@ static void process_alert() {
         if (vibe_state > 1)
             vibes_double_pulse();
             
-        APP_LOG(APP_LOG_LEVEL_DEBUG, "Alert key: %i", OKAY);
+        //APP_LOG(APP_LOG_LEVEL_DEBUG, "Alert key: %i", OKAY);
         if(bg_layer)
             text_layer_set_text_color(bg_layer, GColorBlack);
 #ifdef PBL_PLATFORM_CHALK
@@ -433,12 +422,9 @@ static void process_alert() {
         break;
         
     case OLD_DATA:;
-        VibePattern pat = {
-            .durations = error,
-            .num_segments = ARRAY_LENGTH(error),
-        };
+
         comm_alert();
-        APP_LOG(APP_LOG_LEVEL_DEBUG, "Alert key: %i", OLD_DATA);
+        //APP_LOG(APP_LOG_LEVEL_DEBUG, "Alert key: %i", OLD_DATA);
         
         s_color_channels[0] = 0;
         s_color_channels[1] = 0;
@@ -462,12 +448,16 @@ static void process_alert() {
 
 static void inbox_received_callback(DictionaryIterator *iterator, void *context) {
     app_timer_cancel(timer);
-    APP_LOG(APP_LOG_LEVEL_INFO, "Message received!");
+    check_count = 0;
+    //APP_LOG(APP_LOG_LEVEL_INFO, "Message received!");
     if(time_delta_layer)
         text_layer_set_text(time_delta_layer, "in...");
         
     // Get the first pair
     Tuple *new_tuple = dict_read_first(iterator);
+    
+    uint32_t dict = dict_size(iterator);
+    //APP_LOG(APP_LOG_LEVEL_INFO, "size of received: %d", (int)dict);
     reset_background();
     CgmData* cgm_data = cgm_data_create(1,2,"3m","199","+3mg/dL","Evan");
 
@@ -477,7 +467,7 @@ static void inbox_received_callback(DictionaryIterator *iterator, void *context)
         switch (new_tuple->key) {
                 
             case CGM_ID:;
-                strncpy(data_id, new_tuple->value->cstring, 255);
+                data_id = new_tuple->value->int32;
                 break;
                 
             case CGM_EGV_DELTA_KEY:;
@@ -533,16 +523,16 @@ static void inbox_received_callback(DictionaryIterator *iterator, void *context)
             case CGM_BGS:;
                 ProcessingState* state = data_processor_create(new_tuple->value->cstring, ',');
                 uint8_t num_strings = data_processor_count(state);
-                APP_LOG(APP_LOG_LEVEL_DEBUG, "BG num: %i", num_strings);
+                //APP_LOG(APP_LOG_LEVEL_DEBUG, "BG num: %i", num_strings);
                 bgs = (int*)malloc((num_strings-1)*sizeof(int));     
                 for (uint8_t n = 0; n < num_strings; n += 1) {
                     if (n == 0) {
                         tag_raw = data_processor_get_int(state);
-                        APP_LOG(APP_LOG_LEVEL_DEBUG, "Tag Raw : %i", tag_raw);
+                        //APP_LOG(APP_LOG_LEVEL_DEBUG, "Tag Raw : %i", tag_raw);
                     }
                     else {
                         bgs[n-1] = data_processor_get_int(state);
-                        APP_LOG(APP_LOG_LEVEL_DEBUG, "BG Split: %i", bgs[n-1]);
+                        //APP_LOG(APP_LOG_LEVEL_DEBUG, "BG Split: %i", bgs[n-1]);
                     }     
                 }
                 num_bgs = num_strings - 1;			
@@ -550,11 +540,11 @@ static void inbox_received_callback(DictionaryIterator *iterator, void *context)
             case CGM_BG_TIMES:;
                 ProcessingState* state_t = data_processor_create(new_tuple->value->cstring, ',');
                 uint8_t num_strings_t = data_processor_count(state_t);
-                APP_LOG(APP_LOG_LEVEL_DEBUG, "BG_t num: %i", num_strings_t);
+                //APP_LOG(APP_LOG_LEVEL_DEBUG, "BG_t num: %i", num_strings_t);
                 bg_times = (int*)malloc(num_strings_t*sizeof(int));
                 for (uint8_t n = 0; n < num_strings_t; n += 1) {
                     bg_times[n] = data_processor_get_int(state_t);
-                    APP_LOG(APP_LOG_LEVEL_DEBUG, "BG_t Split: %i", bg_times[n]);
+                    //APP_LOG(APP_LOG_LEVEL_DEBUG, "BG_t Split: %i", bg_times[n]);
                 }			
                 break;
         }
@@ -579,23 +569,55 @@ static void inbox_received_callback(DictionaryIterator *iterator, void *context)
     }
     //Process Alerts
     process_alert();
-    accel_tap_service_unsubscribe();
+    // accel_tap_service_unsubscribe();
     has_launched = 1;
-    com_alert = 1;
-
 
 }
 
 static void inbox_dropped_callback(AppMessageResult reason, void *context) {
+    s_color_channels[0] = 0;
+    s_color_channels[1] = 0;
+    s_color_channels[2] = 255;
+        
+    if (time_delta_layer)
+        text_layer_set_text_color(time_delta_layer, GColorWhite);
+    if (icon_layer)
+        bitmap_layer_set_compositing_mode(icon_layer, GCompOpOr);
+    if (bg_layer)
+        text_layer_set_text_color(bg_layer, GColorWhite);
+    if (delta_layer)    
+        text_layer_set_text_color(delta_layer, GColorWhite);
+    
     snprintf(time_delta_str, 12, "in-err(%d)", t_delta);
+    if(bg_layer)
+        text_layer_set_text(bg_layer, translate_error(reason));
+        
     if(time_delta_layer)
         text_layer_set_text(time_delta_layer, time_delta_str);
+        
     comm_alert();
 
 }
 
 static void outbox_failed_callback(DictionaryIterator *iterator, AppMessageResult reason, void *context) {
+    s_color_channels[0] = 0;
+    s_color_channels[1] = 0;
+    s_color_channels[2] = 255;
+        
+    if (time_delta_layer)
+        text_layer_set_text_color(time_delta_layer, GColorWhite);
+    if (icon_layer)
+        bitmap_layer_set_compositing_mode(icon_layer, GCompOpOr);
+    if (bg_layer)
+        text_layer_set_text_color(bg_layer, GColorWhite);
+    if (delta_layer)    
+        text_layer_set_text_color(delta_layer, GColorWhite);
+        
     snprintf(time_delta_str, 12, "out-err(%d)", t_delta);
+    
+    if(bg_layer)
+        text_layer_set_text(bg_layer, translate_error(reason));
+    
     if(time_delta_layer)
         text_layer_set_text(time_delta_layer, time_delta_str);
     comm_alert();
@@ -603,7 +625,7 @@ static void outbox_failed_callback(DictionaryIterator *iterator, AppMessageResul
 }
 
 static void outbox_sent_callback(DictionaryIterator *iterator, void *context) {
-    APP_LOG(APP_LOG_LEVEL_INFO, "out sent callback");
+    //APP_LOG(APP_LOG_LEVEL_INFO, "out sent callback");
 }
 
 static void window_load(Window * window) {
@@ -697,8 +719,8 @@ static void init() {
     
     tick_timer_service_subscribe(MINUTE_UNIT, tick_handler);
     
-    accel_service_set_sampling_rate(ACCEL_SAMPLING_10HZ);
-    accel_tap_service_subscribe(accel_tap_handler);
+    // accel_service_set_sampling_rate(ACCEL_SAMPLING_10HZ);
+    // accel_tap_service_subscribe(accel_tap_handler);
     
        
     // Registering callbacks
@@ -706,7 +728,7 @@ static void init() {
     app_message_register_inbox_dropped(inbox_dropped_callback);
     app_message_register_outbox_failed(outbox_failed_callback);
     app_message_register_outbox_sent(outbox_sent_callback);
-    app_message_open(app_message_inbox_size_maximum(), app_message_outbox_size_maximum());
+    app_message_open(320, 40);
     
     timer = app_timer_register(10000, timer_callback, NULL);
 
@@ -714,7 +736,6 @@ static void init() {
 
 static void deinit() {
     window_destroy(s_main_window);
-    persist_write_string(0, data_id);
 }
 
 int main() {
